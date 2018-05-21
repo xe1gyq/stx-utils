@@ -1,0 +1,22 @@
+[Unit]
+Description=Titanium heartbeat server
+After=network.target remote-fs.target nss-lookup.target
+
+[Service]
+Type=forking
+PIDFile=/run/heartbeat.pid
+EnvironmentFile=/etc/heartbeat/heartbeat.conf
+ExecStart=/etc/heartbeat/heartbeat_systemd_init start systemd
+ExecReload=/etc/heartbeat/heartbeat_systemd_init restart systemd
+ExecStop=/etc/heartbeat/heartbeat_systemd_init stop systemd
+# We want systemd to give heartbeat some time to finish gracefully, but still want
+# it to kill heartbeat after TimeoutStopSec if something went wrong during the
+# graceful stop. Normally, Systemd sends SIGTERM signal right after the
+# ExecStop, which would kill heartbeat. We are sending useless SIGCONT here to give
+# heartbeat time to finish.
+KillSignal=SIGCONT
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

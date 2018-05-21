@@ -1,0 +1,20 @@
+#/bin/sh
+
+#
+# Copyright (c) 2013-2014 Wind River Systems, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+FILE="/tmp/unhealthy"
+
+if [ -f $FILE ];
+then
+   echo "File $FILE exists."
+   rm -f $FILE
+   exit 1
+else
+   echo "File $FILE does not exist."
+fi
+
+exit 0

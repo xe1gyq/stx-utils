@@ -1,0 +1,478 @@
+Copyright © 2013-2017 Wind River Systems, Inc.
+
+SPDX-License-Identifier: Apache-2.0
+-----------------------------------------------------------------------
+
+DESCRIPTION
+===========
+
+    Titanium Cloud Guest Heartbeat is a service to monitor 
+the health of guest application(s) within a VM running under 
+WindRiver's Carrier Grade Communications Server.  Loss of 
+heartbeat will result in a specified corrective action  e.g. 
+reboot the VM.
+
+   The guest application(s) within the VM will also be given 
+the opportunity to recieve notification of, or even veto, 
+some nova commanded status changes that would stop or reboot the VM.
+The guest application within the VM can use this capability to 
+cleanly shut down or even transfer its service to a peer VM.
+
+
+REQUIREMENTS
+============
+    Compilation:
+        Linux OS    ## Same architecture as the VM.
+                    ## e.g. 32 vs 64 bit Intel
+        gcc compiler
+
+        development libraries and headers for:
+           glibc        ## C library
+           libpthread   ## Pthread library
+           librt        ## Realtime library
+           libdl        ## Dynamic link library
+
+    VM Runtime:
+        Linux OS
+
+        chkconfig       ## init script installer
+
+        runtime libraries for:
+           glibc        ## C library
+           libpthread   ## Pthread library
+           librt        ## Realtime library
+           libdl        ## Dynamic link library
+
+        Access to the openstack meta-data server.
+
+
+DELIVERABLE
+===========
+Titanium Cloud Guest Heartbeat is delivered as source with the
+required makefiles in a compressed tarball, wrs-heartbeat-v1.0.0.tgz,
+such that it can be compiled for the applicable guest linux 
+distribution.
+
+
+COMPILE
+=======
+Extract the tarball contents ...
+
+   tar xvf wrs-heartbeat-v1.0.0.tgz
+
+To compile, simply run ...
+
+   cd wrs-heartbeat-1.0.0
+   make
+
+This will produce two files 'heartbeat.tgz' and 'heartbeat_systemd.tgz'.
+They will install to /usr/local/bin and /usr/local/lib by default.
+
+Alternate install locations can be specified using the following syntax.
+
+   make USR_PATH=usr LIB_PATH=usr/lib64
+
+So in this example the tarballs will install to /usr/bin and /usr/lib64.
+
+
+INSTALL
+=======
+Running VM:
+
+   Test if your platform is using systemd.  First look for the systemd process
+
+       ps -ef | grep systemd
+
+   and second verify that the systemctl tool is available
+
+       systemctl --version
+
+   In this case us the SYSTEMD instructions, otherwise the SYSV instructions.
+
+   SYSTEMD: 
+   As the root user, copy heartbeat_systemd.tgz to the root directory of you VM 
+   and extract it with.
+
+       cp ./heartbeat_systemd.tgz / 
+       cd /
+       tar xzvf heartbeat_systemd.tgz
+       rm heartbeat_systemd.tgz
+
+       systemctl daemon-reload
+       systemctl start heartbeat.service
+       systemctl enable heartbeat.service
+
+   SYSV:
+   As the root user, copy heartbeat.tgz to the root directory of you VM 
+   and extract it with.
+
+       cp ./heartbeat.tgz / 
+       cd /
+       tar xzvf heartbeat.tgz
+       rm heartbeat.tgz
+
+       chkconfig --add heartbeat_init
+       /etc/init.d/heartbeat_init start
+
+
+As part of building the VM ISO Image:
+
+    Within the target root filesystem of your VM ISO Build Environment:
+
+    SYSTEMD: 
+       tar xzvf heartbeat_systemd.tgz
+       rm heartbeat_systemd.tgz
+
+    SYSV:
+       tar xzvf heartbeat.tgz
+       rm heartbeat.tgz
+
+       ln -s /etc/init.d/heartbeat_init /etc/rc#.d/K##heartbeat_init
+       ln -s /etc/init.d/heartbeat_init /etc/rc#.d/S##heartbeat_init
+
+   ... and build your ISO image as usual.
+    
+
+
+CONFIGURATION and USAGE
+=======================
+    
+Indicate support of Guest Heartbeating for the VM
+-------------------------------------------------
+
+1) Create a Flavor for your VM to be based on, or modify an existing flavor.
+
+   An extended flavor attribute, 'Guest Heartbeat', is used to indicate that VMs
+   of this flavor support Titanium Cloud Guest Heartbeating.  The default
+   value is 'False'.
+
+   If support is indicated, then as soon as the Guest VM's Titanium Cloud 
+   Heartbeat daemon registers with the Titanium Cloud Compute Services on 
+   the compute node host, heartbeating will be enabled.
+
+   a) Modify an existing flavor:
+      i) via dashboard:
+          - Select 'Admin->Flavors' to bring up the list of flavors
+          - Choose a flavor to modify.  
+          - Select 'Edit Flavor' 
+               > Select the 'Guest Heartbeat' check box
+               > Select 'Save'
+     ii) via command line:
+          - nova flavor-key <flavor-name> set guest:heartbeat=True
+
+     Note: already running instances that were launched with this flavor
+           are NOT affected.
+
+   b) Create a new flavor
+      i) via dashboard:
+          - Select 'Admin->Flavors' to bring up the list of flavors
+          - Select '+ Create Flavor' in the upper right.
+          - Fill in the fields as desired
+          - Select the 'Guest Heartbeat' checkbox
+          - Select 'Create Flavor'
+     ii) via command line:
+          - nova flavor-create --guest-heartbeat true <flavor-name> ...<additional args>...
+
+2) launch a new instance of your VM
+
+3) Verify your VM is running with Heartbeat enabled.
+
+   Log into the VM.  
+
+   Heartbeat logs are write to syslog's 'user' facility, which are typically logged by the syslog 
+service under /var/log/user.log in our example guest, and /var/log/messages in most other distributions.  
+Please refer to syslog for details on log settings in order to determine location of logged heartbeat message
+
+   Heartbeat logs are easy to identify. The logs always contain the string 'heartbeat:'. A recursive 
+grep of /var/log is one way to determine where your syslog is sending the heartbeat logs.
+ 
+   USER_LOG=`grep -r -l 'heartbeat:' /var/log`
+   echo $USER_LOG
+
+      /var/log/user.log
+
+A successful connection can be verified by looking for the following log.  
+
+   grep heartbeat $USER_LOG | grep vio_client_init
+
+       vio_client_init: INFO: Connection accepted to '/dev/virtio-ports/cgcs.heartbeat', fd = 7
+
+
+       
+Configuring heartbeating
+------------------------
+
+The heartbeat server within your VM will register with the Titanium Cloud Compute Services on the compute node host.  Part of that registration process is the specification of a heartbeat interval and a corrective action for a failed/unhealthy VM.  The values of heartbeat interval and corrective action come from the /etc/heartbeat/heartbeat.conf file and/or from arguments specified in the /etc/init.d/heartbeat_init script.
+
+Heartbeating works on a challenge response model.  The Titanium Cloud Compute Services on the compute node host will challenge the Guest's Heartbeat daemon with a message each interval.  The Guest's Heartbeat daemon must respond prior to the next interval with a message indicating good health.  If the Titanium Cloud Compute Services does not receive a valid response, or if the response specifies that the VM is in ill health, then the previously configured corrective action is taken.
+
+This mechanism should allow detection of a failed or hung QEMU/KVM instance, or a failure of the OS within the VM
+to schedule the heartbeat process or to route basic IO, or an application level error / failure.
+
+The mechanism can be extended by allowing additional VM resident scripts and processess, heartbeat clients, to register for heartbeating.
+Each script or process can specify its own heartbeat interval, and its corrective action can be to raise an ill health flag
+on the VM as a whole.  This ill health flag will cause the heartbeat server to report ill health to the Titanium Cloud Compute Services on the compute node host on the next challenge, and provoke the corrective action.
+
+
+
+Configuration of the hearbeat server:
+
+1) The heartbeat interval is specified by the VM in one of three places .
+
+   i) The heartbeat.conf file.  (recommended)
+
+       /etc/heartbeat/heartbeat.conf:
+           ## This specifies the interval between heartbeats in milliseconds between this heartbeat server and its superior.
+           HB_INTERVAL=1000   
+          
+           ## This specifies the delay after initial registration to the first heartbeat in milliseconds.  This can be used 
+           ## to help deal with any delays associated with system reboots.
+           FIRST_HB=2000
+      
+   ii) The heartbeat command line , if not overriden by the heartbeat.conf file
+         
+       heartbeat --first <millisec> --interval <millisec> ...<additional args>...
+
+   iii) If neither of the two above options is used, default values are used.
+
+       heartbeat_types.h:
+           #define HB_DEFAULT_FIRST_MS      2000
+           #define HB_DEFAULT_INTERVAL_MS   1000
+
+    Note: Be cautious going much below 500 millisec. You must allow for scheduling
+      delays on both compute and your VM, as well as messaging delays.
+ 
+2) Set the corrective action in one of two places 
+
+   i) The heartbeat.conf file.  (recommended)
+
+        /etc/heartbeat/heartbeat.conf:
+            ## Set the corrective action.  Default is "log".  For a VM your options are:
+            ##   "log"     Only a log is issued to syslog's 'user' facility on the compute.
+            ##             e.g. /var/log/user.log on Titanium's sample guest image
+            ##             e.g. /var/log/messages on many common distributions.
+            ##   "reboot"  Issue a nova reboot against this instance.  
+            ##             Also a log is sent to syslog's 'user' facility on the compute.
+            ##             e.g. /var/log/user.log on Titanium's sample guest image
+            ##             e.g. /var/log/messages on many common distributions.
+            ##   "stop"    Issue a nova stop against this instance.
+            CORRECTIVE_ACTION="reboot"
+
+
+   ii) The heartbeat command line , if not overriden by the heartbeat.conf file
+
+       heartbeat  --corrective <action> ...<additional args>...
+  
+   For a VM your options for a correective action are:
+
+       "log"
+            Only a log is issued to syslog's 'user' facility on the compute.
+              e.g. /var/log/user.log on Titanium's sample guest image
+              e.g. /var/log/messages on many common distributions.
+
+       "reboot",
+            Issue a nova reboot against this instance.  
+            Also a log is sent to syslog's 'user' facility on the compute.
+              e.g. /var/log/user.log on Titanium's sample guest image
+              e.g. /var/log/messages on many common distributions.
+
+       "stop",
+            Issue a nova stop against this instance.
+
+
+                  
+3) Adding application-specific health check and/or shutdown behaviour (optional)
+
+    Additional VM health checks can be bound into the heartbeat server.  
+    The supplemental health check can take the form of one or more scripts
+    or processses executing the health checks.  When multiple entities are voting on 
+    VM health, it only takes one vote of ill health for the corrective action to be triggered.  
+    The corrective action is not triggered immediately however.  Rather a flag is set
+    within the local heartbeat server.  The flags are not checked until the Titanium Cloud
+    Compute Services sends a health challenge to the local guest's heartbeat server.
+    If at that time, any flag indicates ill health, the Titanium Cloud Compute Services on the 
+    compute node host is notified and the corrective action is taken.
+
+    Similarly shutdown behaviour, both conditionally allowing or disallowing and actual 
+    graceful shutdown behaviour, can be bound into the heartbeat server.  And again, 
+    the shutdown behaviour can take the form of one or more scripts or processes executing
+    the shutdown tasks.  On a revocable shutdown vote, it only takes one vote of 'no' to 
+    reject the shutdown.  On an irrevocable shutdown request, all shutdown scripts and/or
+    process behaviour are executed.
+
+
+    The two options for binding application behaviour are via scripts and in Application C code via a C Client API:
+
+    1) Register a health check script that validates some component of overall VM health,
+       as well as register a shutdown script to gracefully shut down the application, ... as follows.
+
+        heartbeat_client --health_script <path_to_script> --first <millisecs> --interval <millisecs> --corrective set_vm_health 
+                         --event_handling_script <path_to_script> &
+   
+      a) The heartbeat_client utility process will register with the local heartbeat server to recieve health challenge messages at the specified interval.
+         In response to the challenge message, it will run the health script, which must run to completion in less time than the designated interval.
+
+         If the script returns zero, heartbeat_client will respond to the server with a message indication health is good.
+         If the script returns non-zero, heartbeat_client will respond to the server with a message indicating ill health.  
+
+         Also the first line of stdout from the script is captured and sent as an explanation of what went wrong. This message
+         will be seen in syslog's 'user' facility on the compute. 
+              e.g. /var/log/user.log on Titanium's sample guest image or /var/log/messages on many common distributions
+
+         Note: The error text is limited to 192 characters, after which truncation will occur.
+
+         Note: Failure to respond within your self selected interval is an indication of ill health, 
+               The error text will read "Heartbeat timed out".
+
+         e.g. Ill health message
+
+             ERROR: Ill health reported by: name=test; instance_id=26e1024e-7b1a-4882-ad21-622ae0f38a61; health_rc=1; FD=9; Slot=1; Msg=My message here
+
+      b) When registered, the heartbeat_client utility process will also receive shutdown challenge/request messages.
+         In response to the challenge or request message, it will run the shutdown script.
+
+         The shutdown script is invoked with two parameters; MSGTYPE (revocable vote or irrevocable request) and EVENT (i.e. stop, reboot, live_migrate, etc.).
+         For a revocable vote MSGTYPE, if the script returns zero the vote is 'yes/allowed', otherwise 'no/rejected'.
+         For an irrevocable request MSGTYPE, the exit value of the script simply implies success but does not affect any other behaviour.
+
+
+    2) Implement a health check and/or shutdown behaviour directly in your payload application.
+       A simplified example of the application code to use the Heartbeat API and implement Health Check and Shutdown behaviour is shown below.
+
+       When compiling, link with:   -lheartbeat_api -lheartbeat -lalarm_clock -latomic -lrt -lpthread
+
+
+       #include "cgcs/heartbeat_api.h"
+       #include "cgcs/heartbeat_types.h"
+       #include "cgcs/heartbeat_message.h"
+
+       //
+       // Application-specific Health Check Method
+       //
+       int  my_health_check(void *health_check_arg,
+                            char *err_msg_buff,
+                            int   err_msg_buff_size)
+       {
+           healthy = ... call application method to determine health ...
+       
+           if ( ! healthy )
+           {
+               strncpy(err_msg_buff, "my error message here", err_msg_buff_size);
+               return hbh_unhealthy;
+           }
+           
+           return hbh_healthy;
+       }
+
+
+       //
+       // Application-specific Graceful Shutdown Method
+       //
+       heartbeat_event_vote_t shutdown_request_handler(heartbeat_event_t         event_type,
+                                                       heartbeat_notification_t  notification_type,
+                                                       void                     *arg,
+                                                       char                     *err_msg_buff,
+                                                       int                       err_msg_buff_size)
+       {
+           switch (notification_type)
+           {
+               case hbnt_irrevocable:
+
+                   // Being told to shutdown
+                   ... call methods to gracefully shutdown
+
+                   return hbev_complete;
+
+
+               case hbnt_revocable:
+
+                   // Being asked if ok to shutdown
+                   ok_to_shutdown = ... call method to check if ok to shutdown ...
+
+                   if (ok_to_shutdown)
+                      return hbev_accept;
+
+                   return hbev_reject;
+
+
+               default:
+           }
+       }
+
+
+       //
+       // Application's Event Loop
+       //
+       void event_loop()
+       {
+           FD_ZERO(&read_socks);
+
+           // add application-specific sockets and file descriptors to read_socks ...
+           appsock = ...
+           FD_SET(appsock, &read_socks);
+           ... 
+
+           // add the heartbeat socket to read_socks
+           sock = hb_get_socket();
+           FD_SET(sock, &read_socks);
+
+           select(..., &read_socks, ...)   
+
+           // process heartbeat message if present
+           if (FD_ISSET(sock, &read_socks))
+               hb_handle_message();  
+
+           // process other application sockets 
+           ...
+
+       }
+
+
+       //
+       // Main ... Application initialization code
+       //
+       int main(int argc, char** argv)
+       {
+           ...
+
+           // Initialize interface with Titanium Heartbeat Server
+
+               // set my Health Check method
+               hb_set_health_check(my_health_check, NULL);
+
+               // specify my Health Check should set overall VM Instance Health
+               hb_set_corrective_action(0, hbca_process_set_instance_health, 0, NULL);
+
+               // specify my Shutdown Request Handling method
+               hb_set_event_handler(shutdown_request_handler, NULL);
+
+               /* Any pieces of identification for this process you wish */
+               char* name = strdup(argv[0]);
+               char* id = strdup(argv[0]);
+               char* client = strdup(argv[0]);
+
+               /* Timeouts you wish */
+               int first_ms = HB_DEFAULT_FIRST_MS;
+               int interval_ms = HB_DEFAULT_INTERVAL_MS;
+               int vote_ms = HB_DEFAULT_VOTE_MS;
+               int shutdown_ms = HB_DEFAULT_SHUTDOWN_MS;
+               int suspend_ms = HB_DEFAULT_SUSPEND_MS;
+               int resume_ms = HB_DEFAULT_RESUME_MS;
+               int restart_ms = HB_DEFAULT_RESTART_MS;
+
+               // connect with Titanium Heartbeat Server
+               hb_init_client(name, id, client, first_ms, interval_ms,
+                              vote_ms, shutdown_ms, suspend_ms, resume_ms, restart_ms);
+
+
+
+           // Other Application Initialization
+           ...
+
+
+
+           while(1)
+               event_loop();
+       }
+
+

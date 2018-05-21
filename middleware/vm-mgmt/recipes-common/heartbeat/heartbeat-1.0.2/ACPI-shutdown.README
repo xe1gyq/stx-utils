@@ -1,0 +1,33 @@
+ACPI Shutdown README
+--------------------
+
+CG Comms Server's extensions to NOVA have modified the default VM Shutdown to be an ACPI shutdown.  Specifically the 'nova stop <vm-instance>' and 'nova terminate <vm-instance>' and 'nova reboot <vm-instance>' NOVA CLI commands, and the 'Stop Instance' and 'Terminate Instance' Horizon commands all result in an ACPI shutdown in the guest.   
+
+This means that Applications in the guest VM can configure the Linux ACPID service (man acpid - Advanced Configuration and Power Interface event daemon) to call Application-specific scripts in order to gracefully shutdown the applications within the VM on shutdown.  E.g. this could include flushing and closing files, flushing/finishing updates to persistent DBs, and/or cleanly disconnecting from network resources.
+
+The ACPID package must be included in the Linux Distribution being run within the guest. Refer to 'man acpid', for the particular Linux Distribution, in order to determine the specifics of how the ACPID service is configured to execute application-specified scripts on various events. Generally ACPID will look in a configuration directory, /etc/acpi/events/, and parse all the files within this directory as 'rule' configuration files. Each 'rule' configuration file defines an 'event' and an 'action'. The event value is a regular expression against which events are matched (e.g. power down event). The action value is a command line which will be invoked via /bin/sh whenever an event matching the rule in question occurs; typically a shell script in /etc/acpi/actions/.
+
+The Application within the guest can create the event and action files for the power down events, or simply edit the action file if these already exist. A SIGHUP must be sent to the 'acpi' daemon to force a reload of its configuration files.
+
+For example,  with Wind River Linux running in the Guest VM
+
+                Create a file named /etc/acpi/events/powerbtn that contains the following:
+                                event=button/power PWRF
+                                action=/etc/acpi/actions/power.sh
+
+                Then create a file named /etc/acpi/actions/power.sh that contains the following:
+                                #!/bin/sh
+                                #
+                                # Call Application-Specific script for shutdown
+                                /usr/bin/application-ABC/graceful-shutdown
+                                #
+                                # ...and shutdown
+                                /sbin/shutdown -h now "Power button pressed"
+
+                Then send  a SIGHUP to the 'acpi' daemon.
+
+NOTE:  there is a default of 60 seconds for the configured acpi power down actions to execute, before NOVA continues with a non-acpi hard shutdown. Therefore any application graceful-shutdown scripts must complete in this time period.
+
+NOTE:  a '--hard' option is available on stop/terminate/reboot commands in order to do a FORCED shutdown (avoiding ACPID), in the case of a faulty application ACPI script and/or hung application preventing a graceful shutdown.
+
+

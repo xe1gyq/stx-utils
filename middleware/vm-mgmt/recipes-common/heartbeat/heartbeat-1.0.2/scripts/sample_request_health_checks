@@ -1,0 +1,50 @@
+#!/bin/bash
+#
+# Copyright (c) 2013-2014 Wind River Systems, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+
+###
+###
+
+#
+# Request sample_health_check_script be run every 2 seconds.  Health check will fail if you do a
+#    touch /tmp/unhealthy
+# or
+#    kill `pidof $SUB_BIN_PATH/heartbeat_api_test`
+# The corrective action is to rerun this script, which will delete /tmp/unhealthy and reschedule the health check
+#
+
+self=$0
+
+export LD_LIBRARY_PATH=$SUB_LIB_PATH:$LD_LIBRARY_PATH
+
+cmd="$SUB_BIN_PATH/heartbeat_client"
+arg="--health_script /etc/heartbeat/sample_health_check_script --interval 2000 --corrective script --corrective_script $self"
+
+rm -f /tmp/unhealthy 2>/dev/null
+
+pid=$(pidof $cmd 2>/dev/null)
+rtrn=$?
+if [ $rtrn -ne 0 ]; then
+    logger "$cmd not running"
+else
+    logger "Stopping $cmd (pid $pid)"
+    kill $pid
+fi
+
+sleep 1
+
+logger "Starting $cmd $arg"
+$cmd $arg &
+    
+pid=$(pidof $cmd 2>/dev/null)
+rtrn=$?
+if [ $rtrn -ne 0 ]; then
+    logger "$cmd failed to launch"
+else
+    logger "Launched $cmd (pid $pid)"
+fi
+

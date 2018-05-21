@@ -1,0 +1,501 @@
+Copyright © 2013-2014 Wind River Systems, Inc.
+
+SPDX-License-Identifier: Apache-2.0
+-----------------------------------------------------------------------
+
+Configuring VM event notification and voting
+--------------------------------------------
+
+Notifications
+-------------
+
+The VM heartbeat server can be used as a conduit for notifications of
+major VM lifecycle events being taken by Openstack's Nova that will impact 
+this VM.  Reboots, pause/resume and migrations are examples of the 
+types of events your VM can be notified of.  Depending on the event, 
+notifications may preceed the event, follow it or both.
+The full table of events and notifications is found below.
+
+Notifications are an opportunity for the VM to take preparatory actions
+in anticipation of the forthcoming event, or recovery actions after 
+the event has completed.  A few examples
+- A reboot or stop notification might allow the application to stop 
+  accepting transactions and cleanly wrap up existing transactions.  
+- A 'resume' notification after a suspend might trigger a time adjustment.
+- Pre and post migrate notifications might trigger the application
+  to de-register and then re-register with a network load balancer.
+
+If you register a notification handler, it will recieve all events.
+It an event is not of interest, it should return immediately with a
+successful return code.
+
+A process may only register a single notification handler.  However
+multiple processes may independantly register handlers.  Also 
+script based handlers may be registered via heartbeat_client. 
+When multiple processes and scripts register notification handlers,
+they will be run in parallel.  
+
+Notifications are subject to configurable timeouts.  Timeouts are
+specified when the local heartbeat server registers with the
+compute services on the host.  The timeouts are preferably 
+specified in the /etc/heartbeat/heartbeat.conf file. Alternatively
+they can also be given on the command line when launching the
+heartbeat server.  These timeouts govern the maximum time all
+registered notification handlers have to complete.
+
+While pre-notification handlers are running, the event will be delayed.  
+If the timeout is reached, the event will be allowed to proceed.
+Timeouts are logged to the syslog 'user' facility, 
+e.g. /var/log/user.log on Titanium's sample guest imageor
+/var/log/messages on many common distributions.
+
+Currently the handler is not directly terminated by the notification
+engine when it runs overtime. If however the same client has 
+health checks and a corrective action registered, it will
+likely be labeled unhealthy and the corrective action taken.
+
+While post-notification handlers are running, or waiting to be run,
+nova will not be able to declare the action complete.  Keep in mind
+that many events that offer a post notification will require
+the VM's heartbeat server to reconnect to the compute host, and that
+may be further delayed while the VM is rebooted as in a 
+cold migration.  When post-notification is finally triggered, it is
+subject to a timeout as well.  If the timeout is reached, the 
+event will be declared complete.  Again the handler is not 
+directly terminated by the notification engine when it runs overtime,
+but may be labeled unhealthy and the subject of corrective action.
+
+NOTE: A post-event notification that follows a reboot, as in the 
+cold_migrate_end event, is a special case.  It will be triggered as 
+soon as the local heartbeat server reconnects with the compute host, 
+and likely before any processes have a chance to register a handler.  
+The only handler guaranteed to see such a notification is a script 
+directly registered by the heartbeat server itself via its
+config file or command line arguement.
+
+Voting
+------
+
+In addition to notifications, there is also an opportunity for the VM
+to vote on any proposed event.   Voting preceeds all notifications,
+and offers the VM a chance to reject the event nova wishes to initiate.  
+If multiple handlers are registered, it only takes one rejections to
+abort the event. 
+
+The same handler that handles notifications also handles voting.    
+
+Voting is subject to a configurable timeout.  The same timeout 
+applies reguardless of event.  The timeout is specified when the
+local heartbeat server registers with compute services on the 
+host.  The timeout is preferably specified in the 
+/etc/heartbeat/heartbeat.conf file. Alternatively it can also
+be given on the command line when launching the
+heartbeat server.  This timeout governs the maximum time all
+registered voting handlers have to complete the vote.
+
+Any voters that fail to vote within the timeout are assumed to 
+have agreed  with the proposed action. Any voters that exceed
+the timeout are allowed to run, but may be subject to health checks
+and corrective action.
+
+Rejecting an event should be the exception, not the rule, reserved for
+cases when the VM is handling an exceptionally sensitive operation,
+as well as a slow one that can't complete in the notification timeout.
+
+A vote handler should generally not take any action beyond returning its
+vote.  Just because you vote to accept, doesn't mean all your peers
+will also accept.  i.e. the event might not happen.  Taking an action
+against an event that never happens is almost certainly NOT what you want.
+Instead save your actions for the notification that follows if no one rejects.
+The one exception might be to temporarily block the initiation of any
+new task that would cause you to vote to reject an event in the near 
+future.  The theory being that the requestor of the event may retry in
+the near fuure.
+
+Nova is not required to offer a vote.  A vote is called by default when the
+command originates from CLI or Dashboard unless an option to bypass the
+vote is specified.  An internally generated event, perhaps part of a recovery
+action, may bypass voting.
+
+Event Table
+-----------
+
+   Nova Action      Event Name         Vote*  Pre-notification  Post-notification  Timeout
+   -----------      -----------------  ----   ----------------  -----------------  -------
+   stop             stop                yes    yes                no               shutdown
+   reboot           reboot              yes    yes                no               shutdown
+   pause            pause               yes    yes                no               suspend
+   unpause          unpause              no     no               yes               resume
+   suspend          suspend             yes    yes                no               suspend
+   resume           resume               no     no               yes               resume
+   live-migration   live_migrate_begin  yes    yes                no               suspend
+                    live_migrate_end     no     no               yes               resume
+   migrate, resize  cold_migrate_begin  yes    yes                no               suspend
+                    cold_migrate_end     no     no               yes               resume**
+
+        * voting has its own timeout called 'vote' that is event independent.
+       ** after VM reboot and reconection which is subject to the 'restart' timeout.
+
+Configuration of the hearbeat server:
+------------------------------------
+
+1) The voting and notification intervals are specified by the VM in one of two places .
+
+   i) The heartbeat.conf file.  (recommended)
+
+       /etc/heartbeat/heartbeat.conf:
+
+           ## The overall time to vote in milliseconds regardless of the event 
+           ## being voted upon.  It should reflect the slowest of all expected 
+           ## voters when in a sane and healthy condition, plus some allowance 
+           ## for scheduling and messaging
+           VOTE=4000
+
+           ## The overall time to handle a stop or reboot notification in milliseconds.
+           ## It should reflect the slowest of all expected notification handlers
+           ## when in a sane and healthy condition, plus some allowance for scheduling
+           ## and messaging
+           SHUTDOWN_NOTICE=8000
+
+           ## The overall time to handle a pause, suspend or migrate begin notification 
+           ## in milliseconds.  It should reflect the slowest of all expected notification
+           ## handlers when in a sane and healthy condition, plus some allowance for 
+           ## scheduling and messaging
+           SUSPEND_NOTICE=6000
+
+           ## The overall time to handle an unpause, resume or migrate end notification 
+           ## in milliseconds.  It should reflect the slowest of all expected notification
+           ## handlers when in a sane and healthy condition, plus some allowance for 
+           ## scheduling and messaging.  It does not include reboot time.
+           RESUME_NOTICE=8000
+
+           ## The overall time to handle a heat downscale notification in milliseconds.
+           ## It should reflect the slowest handling expected for this event
+           ## when in a sane and healthy condition, plus some allowance for scheduling
+           ## and messaging
+           DOWNSCALE_NOTICE=9000
+
+           ## The overall time to reboot, up to the point of heartbeat server start,
+           ## in milliseconds.  Allow for some I/O contention.
+           RESTART=300000
+
+   ii) If not specified above, default values are used.
+
+      heartbeat_types.h:
+           #define HB_DEFAULT_VOTE_MS      10000
+           #define HB_DEFAULT_SHUTDOWN_MS  10000
+           #define HB_DEFAULT_SUSPEND_MS   10000
+           #define HB_DEFAULT_RESUME_MS    10000
+           #define HB_DEFAULT_DOWNSCALE_MS 10000
+           #define HB_DEFAULT_RESTART_MS  120000
+
+
+    Note: Be cautious going much below 500 millisec. You must allow for scheduling
+      delays on both compute and your VM, as well as messaging delays.
+
+2) Set the server notification handler script in one of two places 
+
+   i) The heartbeat.conf file.  (recommended)
+
+       ## The Path to the event notification script. This is optional.
+       ## The script will be called when nova initiates an action that
+       ## will impact the vm
+       ##
+       ## The event handling script is invoked with two parameters:
+       ##
+       ##   my_event_handling_script MSGTYPE EVENT
+       ##
+       ##     MSGTYPE is one of:
+       ##       'revocable'    Indicating a vote is called for.  Return zero to accept, non-zero to reject.
+       ##                      For a rejection, the first line of stdout emitted by the script will be captured
+       ##                      and passed up to Nova as well is various heartbeat and nova log indicating why
+       ##                      the event was rejected.
+       ##
+       ##       'irrevocable'  Indicating this is a notification only. Take prepatory actions and return zero
+       ##                      if successful, or non-zero on failure.  In the case if failure the first line of
+       ##                      stdout emitted by the script will be captured made visible in a heartbeat log.
+       ##                      Otherwise the return code has no effect on behaviour.
+       ##
+       ##     EVENT is on of: ( 'stop',  'reboot',  'pause', 'unpause', 'suspend', 'resume', 'downscale',
+       ##                       'live_migrate_begin', 'live_migrate_end', 'cold_migrate_begin', 'cold_migrate_end' )
+       ##
+       EVENT_NOTIFICATION_SCRIPT="/etc/heartbeat/sample_event_handling_script"
+
+   ii) The heartbeat command line , if not overriden by the heartbeat.conf file
+
+       heartbeat  --event_handling_script <quoted_script>  ...<additional args>...
+
+   sample_event_handling_script is the default script used for testing.  By default it logs 
+   notifications and votes to accept all actions.  By touching certain magic files in /tmp/ 
+   you can induce the script to timeout or vote no to some events.  For a real environment
+   you should replace this script with one does something more useful; this script is
+   simply provided as a template.
+
+3) Adding application-specific voting and notifications behaviours (optional)
+
+    Additional voting and notification handlers can be bound into the heartbeat server.  
+    The supplemental handlers can take the form of one or more scripts
+    or processses executing the handlers.  
+
+    When multiple entities are voting on an event, it only takes one vote to reject an 
+    event for the event to be aborted.  A timed out voter is assumed to have accepted 
+    the event.
+
+    Supplemental voting and notification handlers can specify their own timeouts.  
+    The actual timeout used is the lesser of their personal timeout, or the VM wide timeout
+    given to the heartbeat server when it was initialized.
+
+    The two options for binding application behaviour are via scripts and in Application C code via a C Client API:
+
+    1) Register a health check script that validates some component of overall VM health,
+       as well as register a event handling script to gracefully shut down the application, ... as follows.
+
+        heartbeat_client --event_handling_script <path_to_script> [--vote_timeout <millisec>] [--shutdown_timeout <millisec>] 
+                 [--suspend_timeout <millisec>] [--resume_timeout <millisec>] [--restart_timeout <millisec>] &
+   
+       The heartbeat_client utility process will register with the local heartbeat server to recieve 
+       event notifications and vote requests.  In response to a message, it will run the event handling script,
+       which must run to completion in less time than the designated interval.
+
+       The event handling script is invoked with two parameters:  
+
+                  my_event_handling_script MSGTYPE EVENT
+
+                  MSGTYPE is one of:
+                        'revocable'    Indicating a vote is called for.  Return zero to accept, non-zero to reject. 
+                                       For a rejection, the first line of stdout emitted by the script will be captured
+                                       and passed up to Nova as well is various heartbeat and nova log indicating why 
+                                       the event was rejected.
+                                       
+                        'irrevocable'  Indicating this is a notification only. Take prepatory actions and return zero
+                                       if successful, or non-zero on failure.  In the case if failure the first line of 
+                                       stdout emitted by the script will be captured made visible in a heartbeat log.
+                                       Otherwise the return code has no effect on behaviour.
+
+                  EVENT is on of: ( 'stop',  'reboot',  'pause', 'unpause', 'suspend', 'resume', 
+                                    'live_migrate_begin', 'live_migrate_end', 'cold_migrate_begin', 'cold_migrate_end' )
+
+    2) Implement a voting and notification handler directly in your payload application.
+       A simplified example of the application code to use the Heartbeat API and implement Shutdown behaviour is shown below.
+
+       When compiling, link with:   -lheartbeat_api -lheartbeat -lalarm_clock -latomic -lrt -lpthread
+
+
+       #include "cgcs/heartbeat_api.h"
+       #include "cgcs/heartbeat_types.h"
+       #include "cgcs/heartbeat_message.h"
+
+       //
+       // Application-specific Health Check Method
+       //
+       int  my_health_check(void *health_check_arg,
+                            char *err_msg_buff,
+                            int   err_msg_buff_size)
+       {
+           healthy = ... call application method to determine health ...
+       
+           if ( ! healthy )
+           {
+               strncpy(err_msg_buff, "my error message here", err_msg_buff_size);
+               return hbh_unhealthy;
+           }
+           
+           return hbh_healthy;
+       }
+
+
+       heartbeat_event_vote_t vote_handler(heartbeat_event_t      event_type,
+                                           void                  *arg,
+                                           char                  *err_msg_buff,
+                                           int                    err_msg_buff_size)
+       {
+           switch (event_type)
+           {
+               case hbet_stop:
+               case hbet_reboot:
+                   ok_to_shutdown = ... call method to check if ok to shutdown ...
+
+                   if (ok_to_shutdown)
+                      return hbev_accept;
+
+                   snprintf(err_msg_buff, err_msg_buff_size, "My reason to reject shutdown");
+                   return hbev_reject;
+
+               case hbet_suspend:
+               case hbet_pause:
+                   ok_to_suspend = ... call method to check if ok to suspend ...
+
+                   if (ok_to_suspend)
+                      return hbev_accept;
+
+                   snprintf(err_msg_buff, err_msg_buff_size, "My reason to reject suspend");
+                   return hbev_reject;
+
+               case hbet_live_migrate_begin:
+               case hbet_cold_migrate_begin:
+
+                   ok_to_migrate = ... call method to check if ok to migrate ...
+
+                   if (ok_to_migrate)
+                      return hbev_accept;
+
+                   snprintf(err_msg_buff, err_msg_buff_size, "My reason to reject migration");
+                   return hbev_reject;
+
+               default:
+                   snprintf(err_msg_buff, err_msg_buff_size, "Unexpected event_type %d", event_type);
+                   return hbev_not_found_error;
+           }
+       }
+
+
+       heartbeat_event_vote_t notification_handler(heartbeat_event_t   event_type,
+                                                   void               *arg,
+                                                   char               *err_msg_buff,
+                                                   int                err_msg_buff_size)
+       {
+           switch (event_type)
+           {
+               case hbet_stop:
+               case hbet_reboot:
+                   ... call method for a clean shutdown ...
+                   return hbev_complete;
+
+               case hbet_suspend:
+               case hbet_pause:
+                   ... call method for a clean suspend ...
+                   return hbev_complete;
+
+               case hbet_unpause:
+               case hbet_resume:
+                   ... call method for a clean resume ...
+                   return hbev_complete;
+
+               case hbet_live_migrate_begin:
+                   ... call method for a clean migrate ...
+                   return hbev_complete;
+
+               case hbet_cold_migrate_begin:
+                   ... call method to prepare for migration ...
+                   ... call method for a clean shutdown ...
+                   return hbev_complete;
+
+               case hbet_live_migrate_end:
+                   ... call method to complete the migration ...
+                   return hbev_complete;
+
+               case hbet_cold_migrate_end:
+                   // Unlikely to recieve this as things currently stand.
+                   // Regular process startup code may have to cope without relying on this event.
+                   ... call method to complete the migration ...
+                   return hbev_complete;
+
+               default:
+                   snprintf(err_msg_buff, err_msg_buff_size, "Unexpected event_type %d", event_type);
+                   return hbev_not_found_error;
+           }
+       }
+
+
+       //
+       // Application-specific Graceful Shutdown Method
+       //
+       heartbeat_event_vote_t shutdown_request_handler(heartbeat_event_t         event_type,
+                                                       heartbeat_notification_t  notification_type,
+                                                       void                     *arg,
+                                                       char                     *err_msg_buff,
+                                                       int                       err_msg_buff_size)
+       {
+           switch (notification_type)
+           {
+               case hbnt_irrevocable:
+
+                   return notification_handler(event_type, arg, err_msg_buff, err_msg_buff_size);
+
+               case hbnt_revocable:
+
+                   return vote_handler(event_type, arg, err_msg_buff, err_msg_buff_size);
+
+               default:
+                   snprintf(err_msg_buff, err_msg_buff_size, "Unknown notification_type %d", notification_type);
+                   return hbev_not_found_error;
+           }
+       }
+
+
+       //
+       // Application's Event Loop
+       //
+       void event_loop()
+       {
+           FD_ZERO(&read_socks);
+
+           // add application-specific sockets and file descriptors to read_socks ...
+           appsock = ...
+           FD_SET(appsock, &read_socks);
+           ... 
+
+           // add the heartbeat socket to read_socks
+           sock = hb_get_socket();
+           FD_SET(sock, &read_socks);
+
+           select(..., &read_socks, ...)   
+
+           // process heartbeat message if present
+           if (FD_ISSET(sock, &read_socks))
+               hb_handle_message();  
+
+           // process other application sockets 
+           ...
+
+       }
+
+
+       //
+       // Main ... Application initialization code
+       //
+       int main(int argc, char** argv)
+       {
+           ...
+
+           // Initialize interface with Titanium Heartbeat Server
+
+               // set my Health Check method
+               hb_set_health_check(my_health_check, NULL);
+
+               // specify my Health Check should set overall VM Instance Health
+               hb_set_corrective_action(0, hbca_process_set_instance_health, 0, NULL);
+
+               // specify my Shutdown Request Handling method
+               hb_set_event_handler(shutdown_request_handler, NULL);
+
+               /* Any pieces of identification for this process you wish */
+               char* name = strdup(argv[0]);
+               char* id = strdup(argv[0]);
+               char* client = strdup(argv[0]);
+
+               /* Timeouts you wish */
+               int first_ms = HB_DEFAULT_FIRST_MS;
+               int interval_ms = HB_DEFAULT_INTERVAL_MS;
+               int vote_ms = HB_DEFAULT_VOTE_MS;
+               int shutdown_ms = HB_DEFAULT_SHUTDOWN_MS;
+               int suspend_ms = HB_DEFAULT_SUSPEND_MS;
+               int resume_ms = HB_DEFAULT_RESUME_MS;
+               int restart_ms = HB_DEFAULT_RESTART_MS;
+
+               // connect with Titanium Heartbeat Server
+               hb_init_client(name, id, client, first_ms, interval_ms,
+                              vote_ms, shutdown_ms, suspend_ms, resume_ms, restart_ms);
+
+
+
+           // Other Application Initialization
+           ...
+
+
+
+           while(1)
+               event_loop();
+       }
+
+

@@ -1,0 +1,181 @@
+#! /bin/sh
+#
+# Copyright (c) 2013-2014 Wind River Systems, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+#
+# chkconfig: 2345 96 96
+#
+### BEGIN INIT INFO
+# Provides:          heartbeat_init
+# Default-Start:     3 5
+# Default-Stop:      0 1 2 6
+# Short-Description: Application Heartbeat Daemon
+### END INIT INFO
+
+
+###
+###
+
+
+if [ -f /lib/lsb/init-functions ] ; then
+. /lib/lsb/init-functions
+fi
+
+if [ -f /etc/init.d/functions ] ; then
+. /etc/init.d/functions
+fi
+
+. /etc/heartbeat/cloud_functions
+
+
+
+HEARTBEAT_CONF="/etc/heartbeat/heartbeat.conf"
+HEARTBEAT_DEV="/dev/virtio-ports/cgcs.heartbeat"
+PLATFORM_CONF="/etc/platform/platform.conf"
+DHCP_LEASE1="/var/run/dhclient.leases"
+DHCP_LEASE2="/var/lib/dhcp/dhclient.leases"
+SERVER="heartbeat"
+INSTALL_DIR="$SUB_BIN_PATH"
+SERVER_PATH="$INSTALL_DIR/$SERVER"
+NODETYPE="vm"
+IFACE=""
+
+PIDDIR=""
+if [ -d /var/run ] ; then
+    PIDDIR="/var/run"
+elif [ -d /run ] ; then
+    PIDDIR="/run"
+fi
+if [ "x$PIDDIR" == "x" ] ; then
+    PIDDIR="/var/run"
+    mkdir -p $PIDDIR
+fi
+    
+PIDFILE="$PIDDIR/$SERVER.pid"
+
+INSTANCE_ID="unknown1-0001-0001-0001-unknown00001"
+
+
+if [ -f ${PLATFORM_CONF} ] ; then
+    NODETYPE=`cat ${PLATFORM_CONF} | grep nodetype | cut -f2 -d'='`
+    logger "Node Type is $NODETYPE"
+fi
+
+RETVAL=0
+
+PATH=/sbin:/usr/sbin:/bin:/usr/bin:$INSTALL_DIR
+export PATH
+
+export LD_LIBRARY_PATH=$SUB_LIB_PATH:$LD_LIBRARY_PATH
+
+case "$1" in
+    start)
+
+        if [ "$NODETYPE" = "vm" ] ; then
+            echo -n "Starting app heartbeat server: "
+            logger "NODETYPE = $NODETYPE\n"
+
+            if [ ! -e "$SERVER_PATH" ] ; then
+                logger "$SERVER_PATH is missing"
+                exit 1
+            fi
+
+            if [ ! -f ${HEARTBEAT_CONF} ]; then
+                logger "${HEARTBEAT_CONF} is missing"
+                exit 1
+            fi
+            source ${HEARTBEAT_CONF}
+
+            if [ "x${HEARTBEAT_ENABLED}" != "xyes" ]; then
+                if [ "x${HEARTBEAT_ENABLED}" != "xsmart" ]; then
+                    logger "heartbeat server is not enabled in ${HEARTBEAT_CONF}"
+                    exit 0
+                fi
+                if [ ! -c ${HEARTBEAT_DEV} ]; then
+                    logger "heartbeat device ${HEARTBEAT_DEV} not found, so heartbeat server will not be enabled"
+                    exit 0
+                fi
+            fi
+
+            uuid=${INSTANCE_ID}
+            osmdget uuid && uuid=${_RET}
+            osmdget name && name=${_RET}
+            mdget instance-id && instance_name=`echo ${_RET} | awk -F \- '{print $2}'`
+            instance_name="instance-$instance_name"
+
+            ip=""
+            EXTRA_ARGS=""
+
+            if [ ! -c ${HEARTBEAT_DEV} ]; then
+                if [ -f ${DHCP_LEASE1} ]; then
+                    ip=`grep -a dhcp-server-identifier ${DHCP_LEASE1} | awk ' { print $3 } ' | awk -F ';' ' { print $1 } ' | tail -n 1`
+                fi
+                if [ -f ${DHCP_LEASE2} ]; then
+                    ip=`grep -a dhcp-server-identifier ${DHCP_LEASE2} | awk ' { print $3 } ' | awk -F ';' ' { print $1 } ' | tail -n 1`
+                fi
+                if test "$ip" = "" ; then
+                    logger "failed to determine dhcp lease server, required for heartbeat operation in absence of virtio device ${HEARTBEAT_DEV}"
+                    exit 0
+                fi
+                EXTRA_ARGS="--client_addr $ip"
+            fi
+
+            if test "$name" = "" || test "$uuid" = "" || test "$instance_name" = "" ; then
+                logger "failed to collect meta-data required to launch heartbeat service: name=$name, uuid=$uuid, instance_name=$instance_name"
+                RETVAL=-1
+            else
+                ARGS="--vm --instance_id $uuid --name $name --instance_name $instance_name ${EXTRA_ARGS}"
+                logger "$SERVER ${ARGS}\n"
+
+                start-stop-daemon --start --background --make-pidfile --pidfile $PIDFILE --exec $SERVER -- ${ARGS}
+                RETVAL=$?
+            fi
+        fi
+
+        if [ $RETVAL -eq 0 ] ; then
+            echo "OK"
+            touch /var/lock/subsys/$DAEMON_NAME
+        else
+            echo "FAIL"
+        fi
+
+        ;;
+
+    stop)
+        echo -n "Stopping app heartbeat server: "
+        if [ -n "`pidof ${SERVER}`" ] ; then
+            killall ${SERVER}
+            rm $PIDFILE
+        fi
+        sleep 1
+        if [ -n "`pidof ${SERVER}`" ] ; then
+            echo "FAIL"
+        else
+            echo "OK"
+        fi
+        ;;
+
+    restart)
+        $0 stop
+        $0 start
+        ;;
+
+    status)
+        status $DAEMON_NAME
+        RETVAL=$?
+        ;;
+
+    condrestart)
+        [ -f /var/lock/subsys/$DAEMON_NAME ] && $0 restart
+        ;;
+
+    *)
+        echo "usage: $0 { start | stop | status | restart | condrestart | status }"
+        ;;
+esac
+
+exit $RETVAL
+

@@ -1,0 +1,56 @@
+.PHONY: all customer_build clean
+
+USR_PATH ?= /usr/local
+LIB_PATH ?= $(USR_PATH)/lib
+BIN_PATH ?= $(USR_PATH)/bin
+INC_PATH ?= /usr/include
+ETC_PATH = /etc/heartbeat
+INIT_PATH ?= /etc/init.d
+SYSTEMD_INIT_PATH ?= /usr/lib/systemd/system
+BLD_PREFIX = release
+BLD_INC_PATH = $(BLD_PREFIX)$(INC_PATH)
+BLD_LIB_PATH = $(BLD_PREFIX)$(LIB_PATH)
+BLD_BIN_PATH = $(BLD_PREFIX)$(BIN_PATH)
+BLD_ETC_PATH = $(BLD_PREFIX)$(ETC_PATH)
+BLD_INIT_PATH = $(BLD_PREFIX)$(INIT_PATH)
+BLD_SYSTEMD_INIT_PATH = $(BLD_PREFIX)$(SYSTEMD_INIT_PATH)
+BLD_TYPE = VM
+
+all: customer_build
+
+customer_build:
+	mkdir -p $(BLD_PREFIX)
+	mkdir -p $(BLD_INIT_PATH)
+	mkdir -p $(BLD_ETC_PATH)
+	mkdir -p $(BLD_BIN_PATH)
+	mkdir -p $(BLD_LIB_PATH)
+	mkdir -p $(BLD_INC_PATH)/cgcs
+	mkdir -p $(BLD_SYSTEMD_INIT_PATH)
+	$(eval ATOMIC_DIR := $(shell ls -1 -v | grep 'libatomic-[0-9]' | tail -n 1))
+	$(eval ATOMIC_VER := $(shell echo $(ATOMIC_DIR) | /usr/bin/awk -F '-' '{ print $$2 }' ))
+	$(eval ALARM_CLOCK_DIR := $(shell ls -1 -v | grep 'libalarm-clock-[0-9]' | tail -n 1))
+	$(eval ALARM_CLOCK_VER := $(shell echo $(ALARM_CLOCK_DIR) | /usr/bin/awk -F '-' '{ print $$3 }' ))
+	$(eval HEARTBEAT_DIR := $(shell ls -1 -v | grep 'heartbeat-[0-9]' | tail -n 1))
+	$(eval HEARTBEAT_VER := $(shell echo $(HEARTBEAT_DIR) | /usr/bin/awk -F '-' '{ print $$2 }' ))
+	$(MAKE) -C $(ATOMIC_DIR)       customer_build BLD_PREFIX=$(BLD_PREFIX) INC_PATH=$(INC_PATH) LIB_PATH=$(LIB_PATH) BIN_PATH=$(BIN_PATH) ETC_PATH=$(ETC_PATH) VER=$(ATOMIC_VER)
+	$(MAKE) -C $(ALARM_CLOCK_DIR)  customer_build BLD_PREFIX=$(BLD_PREFIX) INC_PATH=$(INC_PATH) LIB_PATH=$(LIB_PATH) BIN_PATH=$(BIN_PATH) ETC_PATH=$(ETC_PATH) VER=$(ALARM_CLOCK_VER)
+	$(MAKE) -C $(HEARTBEAT_DIR)    customer_build BLD_PREFIX=$(BLD_PREFIX) INC_PATH=$(INC_PATH) LIB_PATH=$(LIB_PATH) BIN_PATH=$(BIN_PATH) ETC_PATH=$(ETC_PATH) INIT_PATH=$(INIT_PATH) SYSTEMD_INIT_PATH=$(SYSTEMD_INIT_PATH) BLD_TYPE=$(BLD_TYPE) VER=$(HEARTBEAT_VER)
+	cd $(BLD_PREFIX); tar -czvf ../heartbeat.tgz .$(INIT_PATH) .$(ETC_PATH) .$(USR_PATH) .$(INC_PATH)
+	@echo 'heartbeat.tgz' is ready
+	cd $(BLD_PREFIX); tar -czvf ../heartbeat_systemd.tgz .$(SYSTEMD_INIT_PATH) .$(ETC_PATH) .$(USR_PATH) .$(INC_PATH)
+	@echo 'heartbeat_systemd.tgz' is ready
+	@echo 'heartbeat.tgz' is ready
+
+clean:
+	rm -f heartbeat.tgz 
+	rm -f heartbeat_systemd.tgz 
+	rm -rf $(BLD_PREFIX)
+	$(eval ATOMIC_DIR := $(shell ls -1 -v | grep 'libatomic-[0-9]' | tail -n 1))
+	$(eval ATOMIC_VER := $(shell echo $(ATOMIC_DIR) | /usr/bin/awk -F '-' '{ print $$2 }' ))
+	$(eval ALARM_CLOCK_DIR := $(shell ls -1 -v | grep 'libalarm-clock-[0-9]' | tail -n 1))
+	$(eval ALARM_CLOCK_VER := $(shell echo $(ALARM_CLOCK_DIR) | /usr/bin/awk -F '-' '{ print $$3 }' ))
+	$(eval HEARTBEAT_DIR := $(shell ls -1 -v | grep 'heartbeat-[0-9]' | tail -n 1))
+	$(eval HEARTBEAT_VER := $(shell echo $(HEARTBEAT_DIR) | /usr/bin/awk -F '-' '{ print $$2 }' ))
+	$(MAKE) -C $(ATOMIC_DIR) clean VER=$(ATOMIC_VER)
+	$(MAKE) -C $(ALARM_CLOCK_DIR) clean VER=$(ALARM_CLOCK_VER)
+	$(MAKE) -C $(HEARTBEAT_DIR) clean VER=$(HEARTBEAT_VER)
